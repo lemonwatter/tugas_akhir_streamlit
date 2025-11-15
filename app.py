@@ -14,55 +14,48 @@ st.set_page_config(page_title="Virtual Shoe Try-On", layout="wide")
 
 IMG_SIZE = 256
 
-# =========================
+# ========================================
 # MODE PEMUATAN MODEL
-# =========================
-USE_GDRIVE = False   # 🔥 Ganti ke True kalau mau pakai Google Drive
-
+# ========================================
+USE_GDRIVE = False      # 🔥 Ubah ke True kalau mau load dari Google Drive
 LOCAL_MODEL_PATH = "models/pix2pix_tryon_G_final.h5"
 
 GDRIVE_DIRECT_LINK = (
-    "https://drive.google.com/file/d/1DdLcqNDauzIPHOWYxGDvsG5Xvr0Unqec/view?usp=sharing"
+    "https://drive.google.com/uc?export=download&id=1DdLcqNDauzIPHOWYxGDvsG5Xvr0Unqec"
 )
-# Kamu bisa ganti ID Google Drive sesuai link kamu
-
 
 # =====================================================================
 # FUNGSI MEMUAT MODEL
 # =====================================================================
 @st.cache_resource
 def load_model():
-    if USE_GDRIVE:
-        st.warning("Memuat model dari Google Drive (langsung download)...")
+    try:
+        if USE_GDRIVE:
+            st.info("📥 Mendownload model dari Google Drive...")
 
-        response = requests.get(GDRIVE_DIRECT_LINK)
-        if response.status_code != 200:
-            st.error("Gagal download model dari Google Drive!")
-            return None
+            response = requests.get(GDRIVE_DIRECT_LINK)
+            if response.status_code != 200:
+                st.error("❌ Gagal download model dari Google Drive!")
+                return None
 
-        model_bytes = io.BytesIO(response.content)
-
-        try:
+            model_bytes = io.BytesIO(response.content)
             model = tf.keras.models.load_model(model_bytes, compile=False)
+
             st.success("Model berhasil dimuat dari Google Drive!")
             return model
-        except Exception as e:
-            st.error(f"Error memuat model GDrive: {e}")
-            return None
 
-    else:
-        if not os.path.exists(LOCAL_MODEL_PATH):
-            st.error("❌ File model TIDAK ditemukan!")
-            st.error("Pastikan nama file benar dan telah diunggah di GitHub/Git LFS.")
-            return None
+        else:
+            if not os.path.exists(LOCAL_MODEL_PATH):
+                st.error("❌ Model lokal tidak ditemukan!")
+                return None
 
-        try:
             model = tf.keras.models.load_model(LOCAL_MODEL_PATH, compile=False)
-            st.success("Model berhasil dimuat (Mode Lokal).")
+            st.success("Model berhasil dimuat dari file lokal.")
             return model
-        except Exception as e:
-            st.error(f"Error memuat model lokal: {e}")
-            return None
+
+    except Exception as e:
+        st.error(f"⚠ Error memuat model: {e}")
+        return None
 
 
 netG = load_model()
@@ -72,39 +65,60 @@ netG = load_model()
 # UTILITAS GAMBAR
 # =====================================================================
 def normalize(img):
+    """Normalisasi Pix2Pix: 0-255 → -1 sampai 1"""
     return (img / 127.5) - 1.0
 
 def denormalize(img):
-    return ((img + 1) * 127.5).clip(0, 255).astype(np.uint8)
+    """Balik ke range gambar normal"""
+    return np.clip((img + 1) * 127.5, 0, 255).astype(np.uint8)
 
 def load_image(img_data):
-    if isinstance(img_data, str) and os.path.exists(img_data):
-        img = Image.open(img_data).convert("RGB")
-    else:
-        img = Image.open(img_data).convert("RGB")
+    """Load gambar baik dari path maupun upload Streamlit"""
+    try:
+        if isinstance(img_data, str):
+            img = Image.open(img_data).convert("RGB")
+        else:
+            img = Image.open(img_data).convert("RGB")
 
-    img = img.resize((IMG_SIZE, IMG_SIZE))
-    return np.array(img, dtype=np.float32)
+        img = img.resize((IMG_SIZE, IMG_SIZE))
+        img = np.array(img, dtype=np.float32)
+        return img
+    except:
+        return None
 
-def create_mask(shoe_norm):
-    gray = np.mean(shoe_norm, axis=-1, keepdims=True)
-    return (gray > -0.7).astype(np.float32)
+def create_mask(img_norm):
+    """
+    Membuat mask biner 1-channel.
+    img_norm dalam range -1..1
+    Kita deteksi area yang bukan background.
+    """
+    gray = np.mean(img_norm, axis=-1, keepdims=True)
+    mask = (gray > -0.5).astype(np.float32)
+    return mask
 
 
 # =====================================================================
-# FUNGSI INFERENSI
+# FUNGSI INFERENSI / PREDIKSI
 # =====================================================================
 def run_inference(shoe_path, feet_path):
     shoe = load_image(shoe_path)
     feet = load_image(feet_path)
 
+    if shoe is None or feet is None:
+        return None
+
+    # normalisasi
     shoe_norm = normalize(shoe)
     feet_norm = normalize(feet)
+
+    # mask sepatu
     mask = create_mask(shoe_norm)
 
+    # bentuk input => (1,256,256,7)
     input_tensor = np.concatenate([shoe_norm, feet_norm, mask], axis=-1)
     input_tensor = np.expand_dims(input_tensor, 0)
 
+    # prediksi
     pred = netG(input_tensor, training=False)[0]
     pred_img = denormalize(pred.numpy())
 
@@ -127,7 +141,7 @@ with col_left:
     shoe = st.selectbox("Pilih gambar sepatu:", shoe_files)
     st.image(shoe, caption="Sepatu Terpilih", use_column_width=True)
 
-# ---------- PILIH GAMBAR KAKI ----------
+# ---------- PILIH KAKI ----------
 with col_left:
     st.header("2. Masukkan Gambar Kaki")
 
@@ -150,14 +164,19 @@ with col_left:
 # ---------- TOMBOL TRY-ON ----------
 with col_left:
     if st.button("✨ Jalankan Try-On", use_container_width=True):
+
         if netG is None:
-            st.error("Model tidak dimuat — tidak bisa melakukan Try-On.")
+            st.error("❌ Model tidak dimuat.")
         elif feet is None:
-            st.error("Harap masukkan gambar kaki.")
+            st.error("❌ Harap masukkan gambar kaki.")
         else:
-            with st.spinner("Memproses..."):
+            with st.spinner("⏳ Memproses..."):
                 result = run_inference(shoe, feet)
-            col_right.image(result, caption="Hasil Try-On", use_column_width=True)
+
+            if result is not None:
+                col_right.image(result, caption="Hasil Try-On", use_column_width=True)
+            else:
+                st.error("❌ Gagal memproses gambar!")
 
 
 # =====================================================================
