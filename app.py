@@ -1,195 +1,119 @@
 import streamlit as st
 import tensorflow as tf
 import numpy as np
-from PIL import Image
-import os
-import glob
-import requests
+from PIL import Image, ImageOps
+import cv2
 import io
-
-# =====================================================================
-# KONFIGURASI APLIKASI
-# =====================================================================
-st.set_page_config(page_title="Virtual Shoe Try-On", layout="wide")
 
 IMG_SIZE = 256
 
-# ========================================
-# MODE PEMUATAN MODEL
-# ========================================
-USE_GDRIVE = False      # 🔥 Ubah ke True kalau mau load dari Google Drive
-LOCAL_MODEL_PATH = "models/pix2pix_tryon_G_final.h5"
+# ==========================================================
+# Preprocessing: Resize → Convert → Normalize [-1, 1]
+# ==========================================================
+def preprocess_image(img_pil, channels=3):
+    img = img_pil.convert("RGB") if channels == 3 else img_pil.convert("L")
+    img = img.resize((IMG_SIZE, IMG_SIZE))
+    img = np.array(img).astype(np.float32)
 
-GDRIVE_DIRECT_LINK = (
-    "https://drive.google.com/uc?export=download&id=1DdLcqNDauzIPHOWYxGDvsG5Xvr0Unqec"
-)
+    if channels == 1:
+        img = np.expand_dims(img, axis=-1)
 
-# =====================================================================
-# FUNGSI MEMUAT MODEL
-# =====================================================================
-@st.cache_resource
-def load_model():
-    try:
-        if USE_GDRIVE:
-            st.info("📥 Mendownload model dari Google Drive...")
-
-            response = requests.get(GDRIVE_DIRECT_LINK)
-            if response.status_code != 200:
-                st.error("❌ Gagal download model dari Google Drive!")
-                return None
-
-            model_bytes = io.BytesIO(response.content)
-            model = tf.keras.models.load_model(model_bytes, compile=False)
-
-            st.success("Model berhasil dimuat dari Google Drive!")
-            return model
-
-        else:
-            if not os.path.exists(LOCAL_MODEL_PATH):
-                st.error("❌ Model lokal tidak ditemukan!")
-                return None
-
-            model = tf.keras.models.load_model(LOCAL_MODEL_PATH, compile=False)
-            st.success("Model berhasil dimuat dari file lokal.")
-            return model
-
-    except Exception as e:
-        st.error(f"⚠ Error memuat model: {e}")
-        return None
+    img = (img / 127.5) - 1.0     # normalize [-1, 1]
+    return img
 
 
-netG = load_model()
+# ==========================================================
+# Membuat MASK otomatis dari sepatu (IC)
+# ==========================================================
+def create_mask_from_shoe(ic_img_pil):
+    ic = ic_img_pil.convert("RGB")
+    ic = ic.resize((IMG_SIZE, IMG_SIZE))
 
+    # --- Convert to array ---
+    ic_np = np.array(ic)
 
-# =====================================================================
-# UTILITAS GAMBAR
-# =====================================================================
-def normalize(img):
-    """Normalisasi Pix2Pix: 0-255 → -1 sampai 1"""
-    return (img / 127.5) - 1.0
+    # --- Convert ke grayscale ---
+    gray = cv2.cvtColor(ic_np, cv2.COLOR_RGB2GRAY)
 
-def denormalize(img):
-    """Balik ke range gambar normal"""
-    return np.clip((img + 1) * 127.5, 0, 255).astype(np.uint8)
+    # --- Threshold otomatis (Otsu) ---
+    _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-def load_image(img_data):
-    """Load gambar baik dari path maupun upload Streamlit"""
-    try:
-        if isinstance(img_data, str):
-            img = Image.open(img_data).convert("RGB")
-        else:
-            img = Image.open(img_data).convert("RGB")
+    # Mask putih = sepatu, hitam = background
+    mask = mask.astype(np.float32)
+    mask = mask / 255.0           # 0–1
 
-        img = img.resize((IMG_SIZE, IMG_SIZE))
-        img = np.array(img, dtype=np.float32)
-        return img
-    except:
-        return None
+    # Ubah ke [-1, 1]
+    mask = (mask * 2.0) - 1.0
 
-def create_mask(img_norm):
-    """
-    Membuat mask biner 1-channel.
-    img_norm dalam range -1..1
-    Kita deteksi area yang bukan background.
-    """
-    gray = np.mean(img_norm, axis=-1, keepdims=True)
-    mask = (gray > -0.5).astype(np.float32)
+    mask = np.expand_dims(mask, axis=-1)
     return mask
 
 
-# =====================================================================
-# FUNGSI INFERENSI / PREDIKSI
-# =====================================================================
-def run_inference(shoe_path, feet_path):
-    shoe = load_image(shoe_path)
-    feet = load_image(feet_path)
-
-    if shoe is None or feet is None:
-        return None
-
-    # normalisasi
-    shoe_norm = normalize(shoe)
-    feet_norm = normalize(feet)
-
-    # mask sepatu
-    mask = create_mask(shoe_norm)
-
-    # bentuk input => (1,256,256,7)
-    input_tensor = np.concatenate([shoe_norm, feet_norm, mask], axis=-1)
-    input_tensor = np.expand_dims(input_tensor, 0)
-
-    # prediksi
-    pred = netG(input_tensor, training=False)[0]
-    pred_img = denormalize(pred.numpy())
-
-    return pred_img
+# ==========================================================
+# Gabungkan IA + IC + IM → (256, 256, 7)
+# ==========================================================
+def combine_input(ia_img, ic_img, im_mask):
+    return np.concatenate([ia_img, ic_img, im_mask], axis=-1)
 
 
-# =====================================================================
-# UI STREAMLIT
-# =====================================================================
-st.title("👟 Virtual Shoe Try-On")
-
-col_left, col_right = st.columns([1, 1])
-
-# ---------- PILIH SEPATU ----------
-with col_left:
-    st.header("1. Pilih Sepatu")
-
-    shoe_files = glob.glob("assets/shoes/*.jpg") + glob.glob("assets/shoes/*.png")
-
-    shoe = st.selectbox("Pilih gambar sepatu:", shoe_files)
-    st.image(shoe, caption="Sepatu Terpilih", use_column_width=True)
-
-# ---------- PILIH KAKI ----------
-with col_left:
-    st.header("2. Masukkan Gambar Kaki")
-
-    feet_files = glob.glob("assets/feet/*.jpg") + glob.glob("assets/feet/*.png")
-
-    mode = st.radio("Pilih metode:", ["Galeri", "Upload Sendiri"])
-
-    if mode == "Galeri":
-        feet = st.selectbox("Pilih gambar kaki:", feet_files)
-        st.image(feet, caption="Citra Kaki", use_column_width=True)
-
-    else:
-        uploaded = st.file_uploader("Upload gambar kaki", type=["jpg", "jpeg", "png"])
-        if uploaded:
-            feet = uploaded
-            st.image(uploaded, caption="Citra Kaki", use_column_width=True)
-        else:
-            feet = None
-
-# ---------- TOMBOL TRY-ON ----------
-with col_left:
-    if st.button("✨ Jalankan Try-On", use_container_width=True):
-
-        if netG is None:
-            st.error("❌ Model tidak dimuat.")
-        elif feet is None:
-            st.error("❌ Harap masukkan gambar kaki.")
-        else:
-            with st.spinner("⏳ Memproses..."):
-                result = run_inference(shoe, feet)
-
-            if result is not None:
-                col_right.image(result, caption="Hasil Try-On", use_column_width=True)
-            else:
-                st.error("❌ Gagal memproses gambar!")
+# ==========================================================
+# Postprocessing Output Model (tanh → 0–255)
+# ==========================================================
+def postprocess_output(pred):
+    pred = (pred + 1.0) * 127.5
+    pred = np.clip(pred, 0, 255).astype(np.uint8)
+    return pred
 
 
-# =====================================================================
-# CSS
-# =====================================================================
-st.markdown("""
-<style>
-.stButton > button {
-    font-weight: bold;
-    border-radius: 8px;
-}
-img {
-    border-radius: 10px;
-}
-</style>
-""", unsafe_allow_html=True)
+# ==========================================================
+# Load Model
+# ==========================================================
+@st.cache_resource
+def load_generator():
+    model = tf.keras.models.load_model("pix2pix_tryon_G_final.h5", compile=False)
+    return model
+
+
+# ==========================================================
+# STREAMLIT APP
+# ==========================================================
+st.title("Virtual Try-On (Kaki + Sepatu) — GAN Inference")
+
+st.write("Upload foto kaki (IA) dan foto sepatu (IC). Mask akan dibuat otomatis.")
+
+ia_file = st.file_uploader("Upload Foto Kaki (IA)", type=["jpg", "jpeg", "png"])
+ic_file = st.file_uploader("Upload Foto Sepatu (IC)", type=["jpg", "jpeg", "png"])
+
+if ia_file and ic_file:
+    ia_img = Image.open(ia_file)
+    ic_img = Image.open(ic_file)
+
+    st.image(ia_img, caption="Gambar Kaki (IA)", width=250)
+    st.image(ic_img, caption="Gambar Sepatu (IC)", width=250)
+
+    # 1. Preprocess IA dan IC
+    ia_tensor = preprocess_image(ia_img, channels=3)
+    ic_tensor = preprocess_image(ic_img, channels=3)
+
+    # 2. Bikin MASK otomatis (IM)
+    im_tensor = create_mask_from_shoe(ic_img)
+
+    # 3. Gabungkan input
+    input_tensor = combine_input(ia_tensor, ic_tensor, im_tensor)
+    input_tensor = np.expand_dims(input_tensor, axis=0)   # tambah batch dim
+
+    # 4. Load model
+    netG = load_generator()
+
+    # 5. Inference
+    with st.spinner("Menghasilkan gambar…"):
+        pred = netG(input_tensor, training=False).numpy()
+        pred = postprocess_output(pred[0])
+
+    st.image(pred, caption="Hasil Virtual Try-On", width=300)
+
+    # Save button
+    result = Image.fromarray(pred)
+    buffer = io.BytesIO()
+    result.save(buffer, format="PNG")
+    st.download_button("Download Hasil", buffer.getvalue(), "hasil.png", "image/png")
