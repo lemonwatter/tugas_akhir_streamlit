@@ -1,0 +1,27 @@
+# Virtual environment
+venv/
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Streamlit cache
+.streamlit/
+
+# OS stuff
+.DS_Store
+Thumbs.db
+
+# JANGAN UPLOAD DATASET BESAR
+*.zip
+*.tar
+*.tar.gz
+
+# JANGAN UPLOAD LIBRARY DLL BESAR
+*.dll
+
+# JANGAN UPLOAD MODEL LAMA
+models/*.h5
+!models/pix2pix_tryon_G_final.h5
