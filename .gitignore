@@ -22,6 +22,3 @@ Thumbs.db
 # JANGAN UPLOAD LIBRARY DLL BESAR
 *.dll
 
-# JANGAN UPLOAD MODEL LAMA
-models/*.h5
-!models/pix2pix_tryon_G_final.h5

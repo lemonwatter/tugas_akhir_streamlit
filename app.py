@@ -19,7 +19,7 @@ IMG_SIZE = 256
 # =========================
 USE_GDRIVE = False   # 🔥 Ganti ke True kalau mau pakai Google Drive
 
-LOCAL_MODEL_PATH = "models/pix2pix_tryon_G.h5"
+LOCAL_MODEL_PATH = "models/pix2pix_tryon_G_final.h5"
 
 GDRIVE_DIRECT_LINK = (
     "https://drive.google.com/file/d/1DdLcqNDauzIPHOWYxGDvsG5Xvr0Unqec/view?usp=sharing"
